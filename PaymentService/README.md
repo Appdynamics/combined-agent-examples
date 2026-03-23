@@ -324,4 +324,4 @@ make clean
 
 ## License
 
-ISC
+Apache-2.0 license

@@ -1,0 +1,84 @@
+services:
+  otel-collector:
+    container_name: otel-collector
+    image: quay.io/signalfx/splunk-otel-collector:latest
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./config/otel-collector-config.yaml:/etc/otelcol/config.yaml:ro
+      - /:/hostfs:ro   # host root for hostmetrics (host CPU/memory, not container)
+    environment:
+      # --- Splunk ingest (required) ---
+      - SPLUNK_ACCESS_TOKEN=${SPLUNK_ACCESS_TOKEN}
+      - SPLUNK_REALM=${SPLUNK_REALM:-sg0}
+      # --- Resource attributes for hostmetrics (host.name for system.cpu.time etc.) ---
+      - OTEL_RESOURCE_ATTRIBUTES=host.name=${HOST_NAME:-order-service-host}
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  order-service:
+    container_name: order-service
+    image: order-service:latest
+    depends_on:
+      - otel-collector
+    ports:
+      - "3000:3000"
+    environment:
+      # --- App (always on) ---
+      - NODE_ENV=production
+      - PORT=3000
+
+      # --- AppDynamics (enable: set APPD_CONTROLLER_HOST + APPD_ACCOUNT_* in .env; dual mode with Splunk) ---
+      - APPD_CONTROLLER_HOST=${APPD_CONTROLLER_HOST}
+      - APPD_CONTROLLER_PORT=${APPD_CONTROLLER_PORT:-443}
+      - APPD_CONTROLLER_SSL=${APPD_CONTROLLER_SSL:-true}
+      - APPD_CONTROLLER_SSL_ENABLED=${APPD_CONTROLLER_SSL_ENABLED:-true}
+      - APPD_ACCOUNT_NAME=${APPD_ACCOUNT_NAME}
+      - APPD_ACCOUNT_ACCESS_KEY=${APPD_ACCOUNT_ACCESS_KEY}
+      - APPD_APP_NAME=${APPD_APP_NAME}
+      - APPD_TIER_NAME=${APPD_TIER_NAME:-OrderService}
+      - APPD_NODE_NAME=${APPD_NODE_NAME:-OrderNode}
+      - agent_deployment_mode=${agent_deployment_mode:-dual}
+
+      # --- Splunk OTel: tracing & service identity (required for Splunk) ---
+      - SERVICE_NAME=${SERVICE_NAME:-OrderService}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
+      - OTEL_LOG_LEVEL=${OTEL_LOG_LEVEL:-debug}
+
+      # --- Splunk OTel: resource attributes (tags for traces/metrics) ---
+      - OTEL_RESOURCE_ATTRIBUTES=deployment.environment=order-space,service.namespace=order-space,service.name=OrderService,service.version=1.0.0,host.name=order-service-host
+
+      # --- Splunk OTel: snapshot profiling / call graph (disable: SPLUNK_SNAPSHOT_PROFILER_ENABLED=false) ---
+      - SPLUNK_PROFILER_LOGS_ENDPOINT=http://otel-collector:4318
+      - SPLUNK_SNAPSHOT_PROFILER_ENABLED=${SPLUNK_SNAPSHOT_PROFILER_ENABLED:-true}
+      #- SPLUNK_SNAPSHOT_SELECTION_PROBABILITY=${SPLUNK_SNAPSHOT_SELECTION_PROBABILITY:-0.2}
+      - SPLUNK_SNAPSHOT_SELECTION_RATE=${SPLUNK_SNAPSHOT_SELECTION_RATE:-0.2}
+      - SPLUNK_SNAPSHOT_PROFILER_SAMPLING_INTERVAL=${SPLUNK_SNAPSHOT_PROFILER_SAMPLING_INTERVAL:-1}
+      - SPLUNK_CPU_PROFILER_COLLECTION_INTERVAL=${SPLUNK_CPU_PROFILER_COLLECTION_INTERVAL:-30000}
+
+      # --- Splunk OTel: always-on profiling - CPU & memory (enable: SPLUNK_PROFILER_ENABLED=true, SPLUNK_PROFILER_MEMORY_ENABLED=true) ---
+      - SPLUNK_PROFILER_ENABLED=${SPLUNK_PROFILER_ENABLED:-false}
+      - SPLUNK_PROFILER_MEMORY_ENABLED=${SPLUNK_PROFILER_MEMORY_ENABLED:-false}
+      - SPLUNK_PROFILER_CALL_STACK_INTERVAL=${SPLUNK_PROFILER_CALL_STACK_INTERVAL:-1000}
+
+      # --- Splunk OTel: metrics (disable: SPLUNK_METRICS_ENABLED=false) ---
+      - SPLUNK_METRICS_ENABLED=${SPLUNK_METRICS_ENABLED:-true}
+      - SPLUNK_RUNTIME_METRICS_ENABLED=${SPLUNK_RUNTIME_METRICS_ENABLED:-true}
+      - SPLUNK_DEBUG_METRICS_ENABLED=${SPLUNK_DEBUG_METRICS_ENABLED:-true}
+      - SPLUNK_INSTRUMENTATION_METRICS_ENABLED=${SPLUNK_INSTRUMENTATION_METRICS_ENABLED:-true}
+
+    volumes:
+      - ./logs:/app/logs
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
