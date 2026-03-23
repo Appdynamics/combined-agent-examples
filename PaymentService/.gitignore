@@ -1,0 +1,30 @@
+# Build
+target/
+!.mvn/wrapper/maven-wrapper.jar
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.settings/
+.project
+.classpath
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# AppDynamics / agents (do not commit agent binaries)
+agents/
+
+# Env and secrets (never commit)
+.env
+.env.local
+.env.*.local
+!.env.example

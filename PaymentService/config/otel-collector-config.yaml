@@ -1,0 +1,71 @@
+# Splunk Distribution of OpenTelemetry Collector - minimal config
+# Receives OTLP from payment-service (and other services), exports to Splunk Observability Cloud.
+# Required: set SPLUNK_ACCESS_TOKEN and SPLUNK_REALM for the otel-collector service (e.g. in .env).
+# If data is not in Splunk O11y: check otel-collector logs for exporter errors (auth, endpoint, network).
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+  hostmetrics:
+    root_path: /hostfs
+    collection_interval: 30s
+    scrapers:
+      cpu: {}
+  #    memory: {}
+  #    load: {}
+  #    process: {}
+  #    disk: {}
+  #    filesystem: {}
+  #    network: {}
+  #    paging: {}
+  #    processes: {}
+  #    system: {}
+
+processors:
+  resourcedetection/host:
+    detectors: [env, system]
+    timeout: 5s
+    system:
+      hostname_sources: [os, cname]
+
+exporters:
+  debug:
+    verbosity: basic
+    sampling_initial: 5
+    sampling_thereafter: 5
+  debug/metrics:
+    verbosity: detailed
+    sampling_initial: 2
+    sampling_thereafter: 2
+  otlp_http/splunk:
+    traces_endpoint: https://ingest.${env:SPLUNK_REALM}.signalfx.com/v2/trace/otlp
+    metrics_endpoint: https://ingest.${env:SPLUNK_REALM}.signalfx.com/v2/datapoint/otlp
+    headers:
+      "X-SF-Token": "${env:SPLUNK_ACCESS_TOKEN}"
+  splunk_hec/splunk:
+    token: "${env:SPLUNK_ACCESS_TOKEN}"
+    endpoint: "https://ingest.${env:SPLUNK_REALM}.signalfx.com/v1/log"
+    source: "otel"
+    sourcetype: "otel"
+
+service:
+  telemetry:
+    logs:
+      level: debug
+      development: true
+      encoding: console
+  pipelines:
+    traces:
+      receivers: [otlp]
+      exporters: [debug, otlp_http/splunk]
+    metrics:
+      receivers: [otlp, hostmetrics]
+      processors: [resourcedetection/host]
+      exporters: [debug, debug/metrics, otlp_http/splunk]
+    logs:
+      receivers: [otlp]
+      exporters: [debug, splunk_hec/splunk]

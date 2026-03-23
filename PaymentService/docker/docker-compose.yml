@@ -1,0 +1,70 @@
+services:
+  otel-collector:
+    container_name: otel-collector
+    image: quay.io/signalfx/splunk-otel-collector:latest
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ../config/otel-collector-config.yaml:/etc/otelcol/config.yaml:ro
+      - /:/hostfs:ro
+    environment:
+      # --- Splunk ingest (required: set in .env) ---
+      - SPLUNK_ACCESS_TOKEN=${SPLUNK_ACCESS_TOKEN}
+      - SPLUNK_REALM=${SPLUNK_REALM:-sg0}
+      # --- Resource attributes for hostmetrics (host.name for system.cpu.time etc.) ---
+      - OTEL_RESOURCE_ATTRIBUTES=host.name=${HOST_NAME:-payment-service-host}
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  payment-service:
+    container_name: payment-service
+    image: payment-service:latest
+    depends_on:
+      - otel-collector
+    ports:
+      - "8080:8080"
+    environment:
+      # --- App (always on) ---
+      - PORT=8080
+
+      # --- AppDynamics (enable: set APPD_CONTROLLER_HOST + APPD_ACCOUNT_* in .env; dual mode with Splunk) ---
+      # Agent path: default /app/agents/javaagent.jar (version-independent). Override with APPD_AGENT_JAR in .env.
+      - APPD_AGENT_JAR=${APPD_AGENT_JAR:-/app/agents/javaagent.jar}
+      - APPD_CONTROLLER_HOST=${APPD_CONTROLLER_HOST}
+      - APPD_CONTROLLER_PORT=${APPD_CONTROLLER_PORT:-443}
+      - APPD_CONTROLLER_SSL=${APPD_CONTROLLER_SSL:-true}
+      - APPD_ACCOUNT_NAME=${APPD_ACCOUNT_NAME}
+      - APPD_ACCOUNT_ACCESS_KEY=${APPD_ACCOUNT_ACCESS_KEY}
+      - APPD_APP_NAME=${APPD_APP_NAME:-payment-space}
+      - APPD_TIER_NAME=${APPD_TIER_NAME:-PaymentService}
+      - APPD_NODE_NAME=${APPD_NODE_NAME:-PaymentNode}
+      - AGENT_DEPLOYMENT_MODE=${AGENT_DEPLOYMENT_MODE:-dual}
+
+      # --- Splunk OTel: tracing & service identity (OTLP to collector; collector uses SPLUNK_* to send to Splunk) ---
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
+      - OTEL_LOG_LEVEL=${OTEL_LOG_LEVEL:-debug}
+
+      # --- Splunk OTel: resource attributes (tags for traces/metrics) ---
+      - OTEL_RESOURCE_ATTRIBUTES=deployment.environment=payment-space,service.namespace=payment-space,service.name=PaymentService,service.version=1.0.0,host.name=payment-service-host
+
+      # --- Splunk OTel: snapshot profiling / call graph (disable: SPLUNK_SNAPSHOT_PROFILER_ENABLED=false) ---
+      - SPLUNK_SNAPSHOT_PROFILER_ENABLED=${SPLUNK_SNAPSHOT_PROFILER_ENABLED:-true}
+      - SPLUNK_SNAPSHOT_SELECTION_PROBABILITY=${SPLUNK_SNAPSHOT_SELECTION_PROBABILITY:-0.2}
+      - SPLUNK_SNAPSHOT_PROFILER_SAMPLING_INTERVAL=${SPLUNK_SNAPSHOT_PROFILER_SAMPLING_INTERVAL:-1}
+
+    volumes:
+      # Mount AppDynamics Java agent (project root agents/ so container sees /app/agents)
+      - ../agents:/app/agents:rw
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
